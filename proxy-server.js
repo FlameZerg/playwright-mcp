@@ -41,10 +41,9 @@ function checkBrowserInstalled() {
   }
 }
 
-// 浏览器自动安装功能
-function installBrowserIfNeeded(callback) {
+// 浏览器自动安装功能（后台异步执行，不阻塞启动）
+function installBrowserInBackground() {
   if (checkBrowserInstalled()) {
-    callback();
     return;
   }
 
@@ -53,42 +52,48 @@ function installBrowserIfNeeded(callback) {
   if (!autoInstall) {
     console.error('❌ Auto-install is disabled. Please install browser manually.');
     console.error('   Run: npx playwright-core install chromium');
-    callback();
     return;
   }
 
-  console.log('🔧 Auto-installing Chromium browser...');
-  console.log('   This may take 1-2 minutes on first run.');
+  console.log('🔧 Auto-installing Chromium browser in background...');
+  console.log('   This may take 1-2 minutes. Server will be ready shortly.');
 
   const installProcess = spawn('npx', ['-y', 'playwright-core', 'install', '--no-shell', 'chromium'], {
-    stdio: 'inherit',
-    env: { ...process.env }
+    stdio: 'pipe',
+    env: { ...process.env },
+    detached: false
+  });
+
+  installProcess.stdout.on('data', (data) => {
+    console.log(`[Install] ${data.toString().trim()}`);
+  });
+
+  installProcess.stderr.on('data', (data) => {
+    console.error(`[Install Error] ${data.toString().trim()}`);
   });
 
   installProcess.on('exit', (code) => {
     if (code === 0) {
       console.log('✅ Browser installation completed successfully');
       if (checkBrowserInstalled()) {
-        callback();
+        isBackendReady = true;
       } else {
         console.error('❌ Browser installation succeeded but browser not found');
-        callback();
       }
     } else {
       console.error(`❌ Browser installation failed with code ${code}`);
-      console.error('   Continuing anyway, backend will fail if browser is required');
-      callback();
     }
   });
 
   installProcess.on('error', (err) => {
     console.error(`❌ Failed to start browser installation: ${err.message}`);
-    callback();
   });
 }
 
-// 在启动后端之前检查/安装浏览器
-installBrowserIfNeeded(() => {
+// 启动浏览器后台安装（如果需要）
+installBrowserInBackground();
+
+// 立即启动后端和代理（不等待浏览器安装）
 
 // Start the actual Playwright MCP server
 const playwrightProcess = spawn('node', ['cli.js', '--headless', '--browser', 'chromium', '--no-sandbox', '--port', BACKEND_PORT], {
@@ -111,7 +116,13 @@ playwrightProcess.stdout.on('data', (data) => {
 });
 
 playwrightProcess.stderr.on('data', (data) => {
-  console.error(`[Backend Error] ${data.toString().trim()}`);
+  const errorMsg = data.toString().trim();
+  console.error(`[Backend Error] ${errorMsg}`);
+  
+  // 检测浏览器缺失错误
+  if (errorMsg.includes('Executable doesn\'t exist') || errorMsg.includes('browser') || errorMsg.includes('install')) {
+    console.warn('⚠️  Browser appears to be missing. Auto-installation should handle this.');
+  }
 });
 
 playwrightProcess.on('error', (error) => {
@@ -271,8 +282,11 @@ const proxyServer = http.createServer((req, res) => {
     return;
   }
 
-  // Check if backend is ready before forwarding
-  if (!isBackendReady) {
+  // MCP 端点 - 即使后端未就绪也要尝试转发（后端可能已启动但未通过健康检查）
+  const isMcpEndpoint = req.url === '/mcp' || req.url.startsWith('/mcp/');
+  
+  // 非-MCP 请求且后端未就绪时返回 503
+  if (!isMcpEndpoint && !isBackendReady) {
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'Service starting',
@@ -285,14 +299,17 @@ const proxyServer = http.createServer((req, res) => {
   forwardRequest(req, res);
 });
 
-  // Wait for backend before starting proxy
+// 立即启动代理服务器（不等待后端，让 Smithery 扫描器可以连接）
+proxyServer.listen(PORT, HOST, () => {
+  console.log(`Proxy server listening on http://${HOST}:${PORT}`);
+  console.log(`Forwarding requests to http://localhost:${BACKEND_PORT}`);
+  console.log('Server ready for connections. Backend is starting in background...');
+  
+  // 后台等待后端就绪
   waitForBackend(() => {
-    proxyServer.listen(PORT, HOST, () => {
-      console.log(`Proxy server listening on http://${HOST}:${PORT}`);
-      console.log(`Forwarding requests to http://localhost:${BACKEND_PORT}`);
-    });
+    console.log('✅ Full service ready - backend and proxy both operational');
   });
-}); // 结束 installBrowserIfNeeded
+});
 
 // Handle process cleanup
 process.on('SIGTERM', () => {
