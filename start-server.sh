@@ -13,6 +13,6 @@ exec node cli.js \
   --no-sandbox \
   --port $PORT \
   --shared-browser-context \
-  --storage-state=/app/storage/auth-state.json \
   --timeout-action=30000 \
-  --timeout-navigation=60000
+  --timeout-navigation=60000 \
+  --output-dir=$PLAYWRIGHT_MCP_OUTPUT_DIR

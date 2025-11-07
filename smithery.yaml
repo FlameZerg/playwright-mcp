@@ -2,12 +2,11 @@ runtime: "container"
 build:
   dockerfile: "Dockerfile"
   dockerBuildPath: "."
+  # 确保构建缓存有效
+  context: "."
+# 持久化存储卷（如果 Smithery 平台不支持，可注释掉）
 volumes:
-  # 存储状态文件 - 保存登录状态（cookies, localStorage）
-  - name: "playwright-storage"
-    mountPath: "/app/storage"
-    retention: "24h"
-  # 输出目录 - 保存截图、PDF、trace
+  # 输出目录 - 保存截图、PDF、trace 文件
   - name: "playwright-output"
     mountPath: "/tmp/playwright-output"
     retention: "24h"
@@ -31,7 +30,7 @@ startCommand:
           type: "string"
           enum: ["tabs", "install", "pdf", "vision"]
         description: "Additional capabilities to enable"
-        default: []
+        default: ["tabs", "pdf"]
       outputDir:
         type: "string"
         description: "Directory for output files"
@@ -41,10 +40,20 @@ startCommand:
         enum: ["allow", "omit"]
         description: "Whether to send image responses to the client"
         default: "allow"
+      timeoutAction:
+        type: "integer"
+        description: "Action timeout in milliseconds"
+        default: 30000
+      timeoutNavigation:
+        type: "integer"
+        description: "Navigation timeout in milliseconds"
+        default: 60000
     additionalProperties: true
   exampleConfig:
     browserName: "chromium"
     headless: true
-    capabilities: ["tabs", "pdf", "vision"]
+    capabilities: ["tabs", "pdf"]
     outputDir: "/tmp/playwright-output"
     imageResponses: "allow"
+    timeoutAction: 30000
+    timeoutNavigation: 60000
