@@ -6,9 +6,9 @@ const { spawn } = require('child_process');
 const PORT = process.env.PORT || 8081;
 const HOST = '0.0.0.0';
 const BACKEND_PORT = 8082;
-const STARTUP_TIMEOUT = 30000; // 30 seconds
+const STARTUP_TIMEOUT = 60000; // 60 seconds
 const HEALTH_CHECK_INTERVAL = 500; // 500ms
-const REQUEST_TIMEOUT = 30000; // 30 seconds
+const REQUEST_TIMEOUT = 120000; // 120 seconds (increased for long operations)
 
 let isBackendReady = false;
 let startupTimer = null;
@@ -114,6 +114,9 @@ cleanupLocks();
 
 let playwrightProcess = null;
 let isStarting = false;
+let healthCheckTimer = null;
+let consecutiveFailures = 0;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 function startPlaywrightBackend() {
   if (playwrightProcess || isStarting) {
@@ -126,19 +129,20 @@ function startPlaywrightBackend() {
   
   // Start the actual Playwright MCP server
   playwrightProcess = spawn('node', [
-  'cli.js',
-  '--headless',
-  '--browser', 'chromium',
-  '--no-sandbox',
-  '--port', BACKEND_PORT,
-  '--user-data-dir=/app/browser-profile',  // 固定用户数据目录，持久化配置
-  '--shared-browser-context',              // 共享浏览器上下文，多客户端共用
-  '--timeout-action=30000',                // 30秒操作超时
-  '--timeout-navigation=60000',            // 60秒导航超时
-  '--output-dir=/tmp/playwright-output'    // 输出目录
-], {
-  stdio: ['ignore', 'pipe', 'pipe']
-});
+    'cli.js',
+    '--headless',
+    '--browser', 'chromium',
+    '--no-sandbox',
+    '--port', BACKEND_PORT,
+    '--user-data-dir=/app/browser-profile',  // 固定用户数据目录
+    '--shared-browser-context',              // 共享浏览器上下文
+    '--save-session',                        // 保存 MCP 会话状态
+    '--timeout-action=60000',                // 60秒操作超时（增加）
+    '--timeout-navigation=120000',           // 120秒导航超时（增加）
+    '--output-dir=/tmp/playwright-output'    // 输出目录
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
 
 // Log backend output for debugging
 playwrightProcess.stdout.on('data', (data) => {
@@ -194,6 +198,51 @@ playwrightProcess.on('exit', (code, signal) => {
 
   isStarting = false;
   console.log('✅ Backend startup sequence completed');
+  
+  // 启动健康监控
+  startHealthMonitoring();
+}
+
+// 健康监控和自动重启
+function startHealthMonitoring() {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer);
+  }
+  
+  healthCheckTimer = setInterval(() => {
+    if (!playwrightProcess || !isBackendReady) {
+      return; // 后端未运行或未就绪，跳过检查
+    }
+    
+    checkBackendHealth((healthy) => {
+      if (healthy) {
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures++;
+        console.warn(`⚠️  Backend health check failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
+        
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          console.error('❌ Backend appears to be dead, attempting restart...');
+          consecutiveFailures = 0;
+          
+          // 杀死旧进程
+          if (playwrightProcess) {
+            playwrightProcess.kill('SIGTERM');
+            playwrightProcess = null;
+          }
+          
+          isBackendReady = false;
+          cleanupLocks();
+          
+          // 等待 3 秒后重启
+          setTimeout(() => {
+            console.log('♻️  Restarting backend...');
+            startPlaywrightBackend();
+          }, 3000);
+        }
+      }
+    });
+  }, 30000); // 每 30 秒检查一次
 }
 
 // 启动后端
