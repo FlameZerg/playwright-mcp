@@ -32,7 +32,7 @@ startCommand:
           type: "string"
           enum: ["tabs", "install", "pdf", "vision"]
         description: "Additional capabilities to enable"
-        default: ["tabs", "pdf", "vision"]
+        default: []
       outputDir:
         type: "string"
         description: "Directory for output files"
@@ -42,7 +42,7 @@ startCommand:
         enum: ["allow", "omit"]
         description: "Whether to send image responses to the client"
         default: "allow"
-    additionalProperties: true
+    additionalProperties: false
   exampleConfig:
     browserName: "chromium"
     headless: true
