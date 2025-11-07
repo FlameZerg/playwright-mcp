@@ -102,7 +102,8 @@ const playwrightProcess = spawn('node', [
   '--browser', 'chromium',
   '--no-sandbox',
   '--port', BACKEND_PORT,
-  '--shared-browser-context',           // 共享浏览器上下文，自动保持登录状态
+  '--isolated',                         // 使用临时目录，避免文件锁冲突
+  '--shared-browser-context',           // 共享浏览器上下文，多客户端共用
   '--timeout-action=30000',             // 30秒操作超时
   '--timeout-navigation=60000',         // 60秒导航超时
   '--output-dir=/tmp/playwright-output' // 输出目录
