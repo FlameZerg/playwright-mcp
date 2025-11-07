@@ -404,25 +404,8 @@ const proxyServer = http.createServer((req, res) => {
     return;
   }
 
-  // 浏览器安装中，阻塞所有请求
-  if (isInstallingBrowser) {
-    res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
-    res.end(JSON.stringify({
-      error: 'Service initializing',
-      message: '浏览器安装中，请 30 秒后重试'
-    }));
-    return;
-  }
-
-  // 浏览器未安装，阻塞所有请求
-  if (!isBrowserInstalled) {
-    res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '60' });
-    res.end(JSON.stringify({
-      error: 'Browser not ready',
-      message: '浏览器未就绪，请稍后重试'
-    }));
-    return;
-  }
+  // 移除浏览器安装阻塞，让 Playwright 自己处理
+  // 如果浏览器缺失，Playwright 会返回错误信息
 
   // 后端未就绪
   const isMcpEndpoint = req.url === '/mcp' || req.url.startsWith('/mcp/');
