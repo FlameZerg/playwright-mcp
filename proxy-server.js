@@ -13,8 +13,12 @@ const REQUEST_TIMEOUT = 60000; // 60 seconds
 let isBackendReady = false;
 let startupTimer = null;
 
+console.log('========================================');
 console.log(`Starting Playwright MCP server proxy on ${HOST}:${PORT}`);
-console.log(`Environment: NODE_ENV=${process.env.NODE_ENV}, PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
+console.log(`Environment: NODE_ENV=${process.env.NODE_ENV}`);
+console.log(`PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
+console.log(`CDP_PORT=${CDP_PORT}, BACKEND_PORT=${BACKEND_PORT}`);
+console.log('========================================');
 
 // Verify browser installation path exists
 const fs = require('fs');
@@ -129,7 +133,23 @@ function startChromeInstance() {
   
   console.log('🚀 Starting standalone Chrome instance with CDP...');
   
-  const chromePath = `${browsersPath}/chromium-1198/chrome-linux/chrome`;
+  // 动态查找 Chromium 路径
+  let chromePath = null;
+  try {
+    const chromeVersions = fs.readdirSync(browsersPath).filter(f => f.startsWith('chromium-'));
+    if (chromeVersions.length > 0) {
+      const latestChrome = chromeVersions.sort().reverse()[0];
+      chromePath = `${browsersPath}/${latestChrome}/chrome-linux/chrome`;
+      console.log(`Found Chrome at: ${chromePath}`);
+    }
+  } catch (err) {
+    console.error(`Failed to find Chrome: ${err.message}`);
+  }
+  
+  if (!chromePath || !fs.existsSync(chromePath)) {
+    console.error('❌ Chrome executable not found!');
+    return;
+  }
   
   chromeProcess = spawn(chromePath, [
     '--remote-debugging-port=' + CDP_PORT,
@@ -292,9 +312,11 @@ function startHealthMonitoring() {
 // 检测 Chrome CDP 是否就绪
 function waitForChromeReady(callback, maxAttempts = 20) {
   let attempts = 0;
+  console.log(`🔍 Waiting for Chrome CDP to be ready (max ${maxAttempts} attempts)...`);
   
   const checkInterval = setInterval(() => {
     attempts++;
+    console.log(`[Attempt ${attempts}/${maxAttempts}] Checking Chrome CDP at http://localhost:${CDP_PORT}/json/version`);
     
     const req = http.request({
       hostname: 'localhost',
@@ -455,6 +477,8 @@ function forwardRequest(req, res, retryCount = 0) {
 
 // Create a proxy server that binds to 0.0.0.0
 const proxyServer = http.createServer((req, res) => {
+  console.log(`→ ${req.method} ${req.url} from ${req.headers.host}`);
+  
   // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
