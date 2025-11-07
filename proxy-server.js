@@ -438,34 +438,33 @@ const proxyServer = http.createServer((req, res) => {
   forwardRequest(req, res);
 });
 
-// 启动流程：验证 → 安装 → 启动 → 预热
+// 快速启动流程：直接启动，后台验证
 (async () => {
   try {
-    // 步骤 1: 验证浏览器健康
-    console.log('🔍 检查浏览器状态...');
-    const browserHealthy = await verifyBrowserHealth();
+    // 直接检查浏览器是否存在
+    isBrowserInstalled = checkBrowserInstalled();
     
-    // 步骤 2: 如果浏览器不健康，尝试安装
-    if (!browserHealthy) {
-      console.warn('⚠️  浏览器不健康，尝试重新安装...');
-      await installBrowserSync();
+    if (!isBrowserInstalled) {
+      console.warn('⚠️  浏览器未检测到，将在后台自动安装');
+      // 后台异步安装，不阻塞启动
+      installBrowserSync().then(() => {
+        isBrowserInstalled = true;
+        console.log('✅ 后台安装完成');
+      }).catch(err => {
+        console.error(`❌ 后台安装失败: ${err.message}`);
+      });
     }
     
-    // 步骤 3: 启动后端
+    // 立即启动后端（不等待浏览器）
     startPlaywrightBackend();
     
-    // 步骤 4: 启动代理服务器
+    // 启动代理服务器
     proxyServer.listen(PORT, HOST, () => {
       console.log(`✅ 代理服务器已启动: http://${HOST}:${PORT}`);
       
-      // 步骤 5: 等待后端就绪
-      waitForBackend(async () => {
-        console.log('✅ 后端就绪，开始预热...');
-        
-        // 步骤 6: 预热浏览器
-        await warmupBrowser();
-        
-        console.log('✅ 服务完全就绪，可以接受请求');
+      // 后台等待后端就绪
+      waitForBackend(() => {
+        console.log('✅ 服务就绪');
       });
     });
   } catch (err) {
