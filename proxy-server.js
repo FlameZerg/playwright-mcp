@@ -289,14 +289,50 @@ function startHealthMonitoring() {
   }, 10000); // 每 10 秒检查一次
 }
 
+// 检测 Chrome CDP 是否就绪
+function waitForChromeReady(callback, maxAttempts = 20) {
+  let attempts = 0;
+  
+  const checkInterval = setInterval(() => {
+    attempts++;
+    
+    const req = http.request({
+      hostname: 'localhost',
+      port: CDP_PORT,
+      path: '/json/version',
+      method: 'GET',
+      timeout: 1000
+    }, (res) => {
+      clearInterval(checkInterval);
+      console.log('✅ Chrome CDP is ready!');
+      callback();
+      req.destroy();
+    });
+    
+    req.on('error', () => {
+      if (attempts >= maxAttempts) {
+        clearInterval(checkInterval);
+        console.error('❌ Chrome CDP failed to start, but continuing anyway...');
+        callback();
+      }
+    });
+    
+    req.on('timeout', () => {
+      req.destroy();
+    });
+    
+    req.end();
+  }, 1000); // 每秒检查一次
+}
+
 // 先启动 Chrome CDP 实例
 startChromeInstance();
 
-// 等待 Chrome 启动后再启动 Playwright
-setTimeout(() => {
-  console.log('✅ Chrome should be ready, starting Playwright backend...');
+// 等待 Chrome 就绪后再启动 Playwright
+waitForChromeReady(() => {
+  console.log('🚀 Starting Playwright backend with CDP connection...');
   startPlaywrightBackend();
-}, 5000); // 等待 5 秒让 Chrome 完全启动
+});
 
 // Health check function
 function checkBackendHealth(callback) {
