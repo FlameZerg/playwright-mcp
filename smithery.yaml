@@ -6,6 +6,10 @@ build:
   context: "."
 # 持久化存储卷（如果 Smithery 平台不支持，可注释掉）
 volumes:
+  # 浏览器配置目录 - 保存登录状态、cookies、缓存
+  - name: "browser-profile"
+    mountPath: "/app/browser-profile"
+    retention: "24h"
   # 输出目录 - 保存截图、PDF、trace 文件
   - name: "playwright-output"
     mountPath: "/tmp/playwright-output"

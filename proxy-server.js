@@ -102,11 +102,11 @@ const playwrightProcess = spawn('node', [
   '--browser', 'chromium',
   '--no-sandbox',
   '--port', BACKEND_PORT,
-  '--isolated',                         // 使用临时目录，避免文件锁冲突
-  '--shared-browser-context',           // 共享浏览器上下文，多客户端共用
-  '--timeout-action=30000',             // 30秒操作超时
-  '--timeout-navigation=60000',         // 60秒导航超时
-  '--output-dir=/tmp/playwright-output' // 输出目录
+  '--user-data-dir=/app/browser-profile',  // 固定用户数据目录，持久化配置
+  '--shared-browser-context',              // 共享浏览器上下文，多客户端共用
+  '--timeout-action=30000',                // 30秒操作超时
+  '--timeout-navigation=60000',            // 60秒导航超时
+  '--output-dir=/tmp/playwright-output'    // 输出目录
 ], {
   stdio: ['ignore', 'pipe', 'pipe']
 });
