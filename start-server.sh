@@ -6,13 +6,13 @@ export PORT=${PORT:-8081}
 # 设置输出目录
 export PLAYWRIGHT_MCP_OUTPUT_DIR=${PLAYWRIGHT_MCP_OUTPUT_DIR:-/tmp/playwright-output}
 
-# Start the server with fixed user data directory and session persistence
+# Start the server with isolated mode and session persistence
 exec node cli.js \
   --headless \
   --browser chromium \
   --no-sandbox \
   --port $PORT \
-  --user-data-dir=/app/browser-profile \
+  --isolated \
   --shared-browser-context \
   --save-session \
   --timeout-action=60000 \

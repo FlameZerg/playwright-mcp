@@ -99,13 +99,13 @@ installBrowserInBackground();
 
 // 进程管理 - 防止多个实例同时启动
 const LOCK_FILE = '/tmp/playwright-mcp.lock';
-const PROFILE_LOCK = '/app/browser-profile/SingletonLock';
 
 function cleanupLocks() {
   try {
-    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
-    if (fs.existsSync(PROFILE_LOCK)) fs.unlinkSync(PROFILE_LOCK);
-    console.log('✅ Cleaned up stale lock files');
+    if (fs.existsSync(LOCK_FILE)) {
+      fs.unlinkSync(LOCK_FILE);
+      console.log('✅ Cleaned up stale lock file');
+    }
   } catch (err) {
     console.warn(`⚠️  Could not clean locks: ${err.message}`);
   }
@@ -116,75 +116,11 @@ cleanupLocks();
 
 // 立即启动后端和代理（不等待浏览器安装）
 
-let chromeProcess = null;  // Chrome CDP 进程
 let playwrightProcess = null;
 let isStarting = false;
 let healthCheckTimer = null;
 let consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 2;
-const CDP_PORT = 9222;  // Chrome 调试端口
-
-// 启动单例 Chrome 实例（CDP 模式）
-function startChromeInstance() {
-  if (chromeProcess) {
-    console.log('✅ Chrome instance already running');
-    return;
-  }
-  
-  console.log('🚀 Starting standalone Chrome instance with CDP...');
-  
-  // 动态查找 Chromium 路径
-  let chromePath = null;
-  try {
-    const chromeVersions = fs.readdirSync(browsersPath).filter(f => f.startsWith('chromium-'));
-    if (chromeVersions.length > 0) {
-      const latestChrome = chromeVersions.sort().reverse()[0];
-      chromePath = `${browsersPath}/${latestChrome}/chrome-linux/chrome`;
-      console.log(`Found Chrome at: ${chromePath}`);
-    }
-  } catch (err) {
-    console.error(`Failed to find Chrome: ${err.message}`);
-  }
-  
-  if (!chromePath || !fs.existsSync(chromePath)) {
-    console.error('❌ Chrome executable not found!');
-    return;
-  }
-  
-  chromeProcess = spawn(chromePath, [
-    '--remote-debugging-port=' + CDP_PORT,
-    '--user-data-dir=/app/browser-profile',
-    '--no-sandbox',
-    '--headless',
-    '--disable-gpu',
-    '--disable-dev-shm-usage',
-    '--disable-software-rasterizer'
-  ], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: false
-  });
-  
-  chromeProcess.stdout.on('data', (data) => {
-    console.log(`[Chrome] ${data.toString().trim()}`);
-  });
-  
-  chromeProcess.stderr.on('data', (data) => {
-    console.error(`[Chrome Error] ${data.toString().trim()}`);
-  });
-  
-  chromeProcess.on('exit', (code) => {
-    console.error(`Chrome process exited with code ${code}`);
-    chromeProcess = null;
-    // 自动重启
-    setTimeout(() => {
-      console.log('♻️  Restarting Chrome instance...');
-      cleanupLocks();
-      startChromeInstance();
-    }, 3000);
-  });
-  
-  console.log(`✅ Chrome CDP server starting on port ${CDP_PORT}`);
-}
 
 function startPlaywrightBackend() {
   if (playwrightProcess || isStarting) {
@@ -193,72 +129,76 @@ function startPlaywrightBackend() {
   }
   
   isStarting = true;
-  console.log('🚀 Starting Playwright MCP backend...');
+  console.log('🚀 Starting Playwright MCP backend (isolated mode)...');
   
-  // Start the actual Playwright MCP server (connecting to CDP)
+  // Start the actual Playwright MCP server
   playwrightProcess = spawn('node', [
     'cli.js',
+    '--headless',
+    '--browser', 'chromium',
+    '--no-sandbox',
     '--port', BACKEND_PORT,
-    '--cdp-endpoint', `http://localhost:${CDP_PORT}`,  // 连接到 Chrome CDP
-    '--save-session',                                  // 保存 MCP 会话状态
-    '--timeout-action=60000',                          // 60秒操作超时
-    '--timeout-navigation=60000',                      // 60秒导航超时
-    '--output-dir=/tmp/playwright-output'              // 输出目录
+    '--isolated',                    // 使用临时目录
+    '--shared-browser-context',      // 运行期间共享上下文
+    '--save-session',                // 保存会话
+    '--timeout-action=60000',        // 60秒操作超时
+    '--timeout-navigation=60000',    // 60秒导航超时
+    '--output-dir=/tmp/playwright-output'
   ], {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
-// Log backend output for debugging
-playwrightProcess.stdout.on('data', (data) => {
-  const message = data.toString().trim();
-  console.log(`[Backend] ${message}`);
-  // Detect when backend is ready
-  if (message.includes('listening') || message.includes('started') || message.includes(BACKEND_PORT)) {
-    isBackendReady = true;
-    if (startupTimer) {
-      clearTimeout(startupTimer);
-      startupTimer = null;
+  // Log backend output for debugging
+  playwrightProcess.stdout.on('data', (data) => {
+    const message = data.toString().trim();
+    console.log(`[Backend] ${message}`);
+    // Detect when backend is ready
+    if (message.includes('listening') || message.includes('started') || message.includes(BACKEND_PORT)) {
+      isBackendReady = true;
+      if (startupTimer) {
+        clearTimeout(startupTimer);
+        startupTimer = null;
+      }
+      console.log('Backend server is ready');
     }
-    console.log('Backend server is ready');
-  }
-});
+  });
 
-playwrightProcess.stderr.on('data', (data) => {
-  const errorMsg = data.toString().trim();
-  console.error(`[Backend Error] ${errorMsg}`);
-  
-  // 检测 ETXTBSY 错误（文件锁冲突）
-  if (errorMsg.includes('ETXTBSY') || errorMsg.includes('spawn ETXTBSY')) {
-    console.error('❌ ETXTBSY detected - browser executable is busy');
-    console.log('🔧 Attempting to clean locks and retry...');
-    cleanupLocks();
+  playwrightProcess.stderr.on('data', (data) => {
+    const errorMsg = data.toString().trim();
+    console.error(`[Backend Error] ${errorMsg}`);
     
-    // 等待 2 秒后重试
-    setTimeout(() => {
-      console.log('♻️  Locks cleaned, backend should retry automatically');
-    }, 2000);
-  }
-  
-  // 检测浏览器缺失错误
-  if (errorMsg.includes('Executable doesn\'t exist') || errorMsg.includes('browser') || errorMsg.includes('install')) {
-    console.warn('⚠️  Browser appears to be missing. Auto-installation should handle this.');
-  }
-});
+    // 检测 ETXTBSY 错误（文件锁冲突）
+    if (errorMsg.includes('ETXTBSY') || errorMsg.includes('spawn ETXTBSY')) {
+      console.error('❌ ETXTBSY detected - browser executable is busy');
+      console.log('🔧 Attempting to clean locks and retry...');
+      cleanupLocks();
+      
+      // 等待 2 秒后重试
+      setTimeout(() => {
+        console.log('♻️  Locks cleaned, backend should retry automatically');
+      }, 2000);
+    }
+    
+    // 检测浏览器缺失错误
+    if (errorMsg.includes('Executable doesn\'t exist') || errorMsg.includes('browser') || errorMsg.includes('install')) {
+      console.warn('⚠️  Browser appears to be missing. Auto-installation should handle this.');
+    }
+  });
 
-playwrightProcess.on('error', (error) => {
-  console.error(`Failed to start backend process: ${error.message}`);
-  process.exit(1);
-});
+  playwrightProcess.on('error', (error) => {
+    console.error(`Failed to start backend process: ${error.message}`);
+    isStarting = false;
+    playwrightProcess = null;
+  });
 
-playwrightProcess.on('exit', (code, signal) => {
-  console.error(`Backend process exited with code ${code} and signal ${signal}`);
-  isStarting = false;
-  playwrightProcess = null;
-  if (code !== 0 && code !== null) {
-    console.error('❌ Backend crashed, will not auto-restart');
-    // process.exit(code);  // 不自动退出，让代理保持运行
-  }
-});
+  playwrightProcess.on('exit', (code, signal) => {
+    console.error(`Backend process exited with code ${code} and signal ${signal}`);
+    isStarting = false;
+    playwrightProcess = null;
+    if (code !== 0 && code !== null) {
+      console.error('❌ Backend crashed, will not auto-restart');
+    }
+  });
 
   isStarting = false;
   console.log('✅ Backend startup sequence completed');
@@ -266,6 +206,9 @@ playwrightProcess.on('exit', (code, signal) => {
   // 启动健康监控
   startHealthMonitoring();
 }
+
+// 立即启动 Playwright 后端
+startPlaywrightBackend();
 
 // 健康监控和自动重启
 function startHealthMonitoring() {
@@ -309,52 +252,6 @@ function startHealthMonitoring() {
   }, 10000); // 每 10 秒检查一次
 }
 
-// 检测 Chrome CDP 是否就绪
-function waitForChromeReady(callback, maxAttempts = 20) {
-  let attempts = 0;
-  console.log(`🔍 Waiting for Chrome CDP to be ready (max ${maxAttempts} attempts)...`);
-  
-  const checkInterval = setInterval(() => {
-    attempts++;
-    console.log(`[Attempt ${attempts}/${maxAttempts}] Checking Chrome CDP at http://localhost:${CDP_PORT}/json/version`);
-    
-    const req = http.request({
-      hostname: 'localhost',
-      port: CDP_PORT,
-      path: '/json/version',
-      method: 'GET',
-      timeout: 1000
-    }, (res) => {
-      clearInterval(checkInterval);
-      console.log('✅ Chrome CDP is ready!');
-      callback();
-      req.destroy();
-    });
-    
-    req.on('error', () => {
-      if (attempts >= maxAttempts) {
-        clearInterval(checkInterval);
-        console.error('❌ Chrome CDP failed to start, but continuing anyway...');
-        callback();
-      }
-    });
-    
-    req.on('timeout', () => {
-      req.destroy();
-    });
-    
-    req.end();
-  }, 1000); // 每秒检查一次
-}
-
-// 先启动 Chrome CDP 实例
-startChromeInstance();
-
-// 等待 Chrome 就绪后再启动 Playwright
-waitForChromeReady(() => {
-  console.log('🚀 Starting Playwright backend with CDP connection...');
-  startPlaywrightBackend();
-});
 
 // Health check function
 function checkBackendHealth(callback) {
@@ -536,7 +433,6 @@ proxyServer.listen(PORT, HOST, () => {
 process.on('SIGTERM', () => {
   console.log('Shutting down...');
   cleanupLocks();
-  if (chromeProcess) chromeProcess.kill();
   if (playwrightProcess) playwrightProcess.kill();
   proxyServer.close();
   process.exit(0);
@@ -545,7 +441,6 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('Shutting down...');
   cleanupLocks();
-  if (chromeProcess) chromeProcess.kill();
   if (playwrightProcess) playwrightProcess.kill();
   proxyServer.close();
   process.exit(0);
@@ -553,5 +448,4 @@ process.on('SIGINT', () => {
 
 process.on('exit', () => {
   cleanupLocks();
-  if (chromeProcess) chromeProcess.kill();
 });
