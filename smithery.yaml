@@ -3,12 +3,11 @@ build:
   dockerfile: "Dockerfile"
   dockerBuildPath: "."
 volumes:
-  # 用户数据目录持久化 - 保存登录状态、cookies、localStorage
-  - name: "playwright-user-data"
-    mountPath: "/home/node/.cache/ms-playwright-mcp"
-    # 24小时保留策略
+  # 存储状态文件 - 保存登录状态（cookies, localStorage）
+  - name: "playwright-storage"
+    mountPath: "/app/storage"
     retention: "24h"
-  # 输出目录持久化 - 保存截图、PDF、trace
+  # 输出目录 - 保存截图、PDF、trace
   - name: "playwright-output"
     mountPath: "/tmp/playwright-output"
     retention: "24h"
@@ -42,7 +41,7 @@ startCommand:
         enum: ["allow", "omit"]
         description: "Whether to send image responses to the client"
         default: "allow"
-    additionalProperties: false
+    additionalProperties: true
   exampleConfig:
     browserName: "chromium"
     headless: true

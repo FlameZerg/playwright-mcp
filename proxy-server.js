@@ -96,7 +96,17 @@ installBrowserInBackground();
 // 立即启动后端和代理（不等待浏览器安装）
 
 // Start the actual Playwright MCP server
-const playwrightProcess = spawn('node', ['cli.js', '--headless', '--browser', 'chromium', '--no-sandbox', '--port', BACKEND_PORT], {
+const playwrightProcess = spawn('node', [
+  'cli.js',
+  '--headless',
+  '--browser', 'chromium',
+  '--no-sandbox',
+  '--port', BACKEND_PORT,
+  '--shared-browser-context',           // 共享浏览器上下文，避免实例冲突
+  '--storage-state=/app/storage/auth-state.json',  // 持久化登录状态
+  '--timeout-action=30000',             // 30秒操作超时
+  '--timeout-navigation=60000'          // 60秒导航超时
+], {
   stdio: ['ignore', 'pipe', 'pipe']
 });
 

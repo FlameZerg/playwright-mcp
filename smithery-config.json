@@ -2,15 +2,22 @@
   "server": {
     "port": 8081,
     "host": "0.0.0.0",
-    "allowedHosts": ["*"]
+    "allowedHosts": ["*"],
+    "sharedBrowserContext": true
   },
   "browser": {
     "browserName": "chromium",
     "launchOptions": {
       "headless": true
+    },
+    "storageState": "/app/storage/auth-state.json",
+    "timeouts": {
+      "action": 30000,
+      "navigation": 60000
     }
   },
   "network": {
     "allowedOrigins": ["*"]
-  }
+  },
+  "outputDir": "/tmp/playwright-output"
 }

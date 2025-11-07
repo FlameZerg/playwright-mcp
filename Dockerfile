@@ -59,9 +59,9 @@ ENV PLAYWRIGHT_MCP_OUTPUT_DIR=/tmp/playwright-output
 # Set the correct ownership for the runtime user on production `node_modules`
 RUN chown -R ${USERNAME}:${USERNAME} node_modules
 
-# 创建持久化目录并设置权限
-RUN mkdir -p /home/${USERNAME}/.cache/ms-playwright-mcp /tmp/playwright-output && \
-  chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.cache /tmp/playwright-output
+# 创建存储和输出目录
+RUN mkdir -p /app/storage /tmp/playwright-output && \
+  chown -R ${USERNAME}:${USERNAME} /app/storage /tmp/playwright-output
 
 USER ${USERNAME}
 
