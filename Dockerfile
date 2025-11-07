@@ -54,6 +54,7 @@ FROM base
 ARG PLAYWRIGHT_BROWSERS_PATH
 ARG USERNAME=node
 ENV NODE_ENV=production
+ENV PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}
 ENV PLAYWRIGHT_MCP_OUTPUT_DIR=/tmp/playwright-output
 
 # Set the correct ownership for the runtime user on production `node_modules`
