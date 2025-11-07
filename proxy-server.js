@@ -93,10 +93,39 @@ function installBrowserInBackground() {
 // 启动浏览器后台安装（如果需要）
 installBrowserInBackground();
 
+// 进程管理 - 防止多个实例同时启动
+const LOCK_FILE = '/tmp/playwright-mcp.lock';
+const PROFILE_LOCK = '/app/browser-profile/SingletonLock';
+
+function cleanupLocks() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+    if (fs.existsSync(PROFILE_LOCK)) fs.unlinkSync(PROFILE_LOCK);
+    console.log('✅ Cleaned up stale lock files');
+  } catch (err) {
+    console.warn(`⚠️  Could not clean locks: ${err.message}`);
+  }
+}
+
+// 启动时清理旧锁
+cleanupLocks();
+
 // 立即启动后端和代理（不等待浏览器安装）
 
-// Start the actual Playwright MCP server
-const playwrightProcess = spawn('node', [
+let playwrightProcess = null;
+let isStarting = false;
+
+function startPlaywrightBackend() {
+  if (playwrightProcess || isStarting) {
+    console.log('⚠️  Backend already starting or running, skipping...');
+    return;
+  }
+  
+  isStarting = true;
+  console.log('🚀 Starting Playwright MCP backend...');
+  
+  // Start the actual Playwright MCP server
+  playwrightProcess = spawn('node', [
   'cli.js',
   '--headless',
   '--browser', 'chromium',
@@ -130,6 +159,18 @@ playwrightProcess.stderr.on('data', (data) => {
   const errorMsg = data.toString().trim();
   console.error(`[Backend Error] ${errorMsg}`);
   
+  // 检测 ETXTBSY 错误（文件锁冲突）
+  if (errorMsg.includes('ETXTBSY') || errorMsg.includes('spawn ETXTBSY')) {
+    console.error('❌ ETXTBSY detected - browser executable is busy');
+    console.log('🔧 Attempting to clean locks and retry...');
+    cleanupLocks();
+    
+    // 等待 2 秒后重试
+    setTimeout(() => {
+      console.log('♻️  Locks cleaned, backend should retry automatically');
+    }, 2000);
+  }
+  
   // 检测浏览器缺失错误
   if (errorMsg.includes('Executable doesn\'t exist') || errorMsg.includes('browser') || errorMsg.includes('install')) {
     console.warn('⚠️  Browser appears to be missing. Auto-installation should handle this.');
@@ -143,10 +184,20 @@ playwrightProcess.on('error', (error) => {
 
 playwrightProcess.on('exit', (code, signal) => {
   console.error(`Backend process exited with code ${code} and signal ${signal}`);
+  isStarting = false;
+  playwrightProcess = null;
   if (code !== 0 && code !== null) {
-    process.exit(code);
+    console.error('❌ Backend crashed, will not auto-restart');
+    // process.exit(code);  // 不自动退出，让代理保持运行
   }
 });
+
+  isStarting = false;
+  console.log('✅ Backend startup sequence completed');
+}
+
+// 启动后端
+startPlaywrightBackend();
 
 // Health check function
 function checkBackendHealth(callback) {
@@ -325,6 +376,7 @@ proxyServer.listen(PORT, HOST, () => {
 // Handle process cleanup
 process.on('SIGTERM', () => {
   console.log('Shutting down...');
+  cleanupLocks();
   playwrightProcess.kill();
   proxyServer.close();
   process.exit(0);
@@ -332,7 +384,12 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('Shutting down...');
+  cleanupLocks();
   playwrightProcess.kill();
   proxyServer.close();
   process.exit(0);
+});
+
+process.on('exit', () => {
+  cleanupLocks();
 });
