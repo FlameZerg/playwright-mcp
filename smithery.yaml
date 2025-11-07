@@ -4,8 +4,12 @@ build:
   dockerBuildPath: "."
   # 确保构建缓存有效
   context: "."
-# 持久化存储卷（如果 Smithery 平台不支持，可注释掉）
+# 持久化存储卷
 volumes:
+  # 浏览器缓存 - 挂载到镜像内置浏览器路径（冗余保护）
+  - name: "playwright-browsers"
+    mountPath: "/ms-playwright"
+    retention: "24h"
   # 输出目录 - 保存截图、PDF、trace 文件
   - name: "playwright-output"
     mountPath: "/tmp/playwright-output"

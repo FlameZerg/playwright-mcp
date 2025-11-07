@@ -6,26 +6,25 @@ const { spawn } = require('child_process');
 const PORT = process.env.PORT || 8081;
 const HOST = '0.0.0.0';
 const BACKEND_PORT = 8082;
-const STARTUP_TIMEOUT = 60000; // 60 seconds
-const HEALTH_CHECK_INTERVAL = 10000; // 10 seconds
-const REQUEST_TIMEOUT = 60000; // 60 seconds
+const STARTUP_TIMEOUT = 60000; // 60秒启动超时
+const HEALTH_CHECK_INTERVAL = 25000; // 25秒健康检查
+const REQUEST_TIMEOUT = 60000; // 60秒请求超时
+const RETRY_DELAYS = [1000, 2000, 5000]; // 重试延迟：1s, 2s, 5s（指数退避）
 
 let isBackendReady = false;
+let isBrowserInstalled = false;
+let isInstallingBrowser = false;
 let startupTimer = null;
-let activeConnections = 0;
-const MAX_CONCURRENT_CONNECTIONS = 1;
 
 console.log('========================================');
-console.log(`Starting Playwright MCP server proxy on ${HOST}:${PORT}`);
-console.log(`Environment: NODE_ENV=${process.env.NODE_ENV}`);
-console.log(`PLAYWRIGHT_BROWSERS_PATH=${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
-console.log(`BACKEND_PORT=${BACKEND_PORT}`);
+console.log(`🚀 启动 Playwright MCP 代理服务器 ${HOST}:${PORT}`);
+console.log(`   环境: ${process.env.NODE_ENV || 'production'}`);
+console.log(`   浏览器路径: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
 console.log('========================================');
 
-// Verify browser installation path exists
+// 浏览器检查与安装
 const fs = require('fs');
 const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
-const autoInstall = process.env.PLAYWRIGHT_AUTO_INSTALL === 'true';
 
 function checkBrowserInstalled() {
   if (!fs.existsSync(browsersPath)) {
@@ -33,186 +32,148 @@ function checkBrowserInstalled() {
   }
   try {
     const files = fs.readdirSync(browsersPath);
-    // 检查是否有 chromium 目录
     const hasChromium = files.some(f => f.startsWith('chromium'));
     if (hasChromium) {
-      console.log(`✅ Browser cache found at: ${browsersPath}`);
-      console.log(`   Contents: ${files.join(', ')}`);
+      console.log(`✅ 浏览器已就绪: ${browsersPath}`);
       return true;
     }
     return false;
   } catch (err) {
-    console.error(`Failed to read browser cache: ${err.message}`);
+    console.error(`❌ 浏览器检查失败: ${err.message}`);
     return false;
   }
 }
 
-// 浏览器自动安装功能（后台异步执行，不阻塞启动）
-function installBrowserInBackground() {
-  if (checkBrowserInstalled()) {
-    return;
-  }
-
-  console.warn(`⚠️  Browser not found at: ${browsersPath}`);
-
-  if (!autoInstall) {
-    console.error('❌ Auto-install is disabled. Please install browser manually.');
-    console.error('   Run: npx playwright-core install chromium');
-    return;
-  }
-
-  console.log('🔧 Auto-installing Chromium browser in background...');
-  console.log('   This may take 1-2 minutes. Server will be ready shortly.');
-
-  const installProcess = spawn('npx', ['-y', 'playwright-core', 'install', '--no-shell', 'chromium'], {
-    stdio: 'pipe',
-    env: { ...process.env },
-    detached: false
-  });
-
-  installProcess.stdout.on('data', (data) => {
-    console.log(`[Install] ${data.toString().trim()}`);
-  });
-
-  installProcess.stderr.on('data', (data) => {
-    console.error(`[Install Error] ${data.toString().trim()}`);
-  });
-
-  installProcess.on('exit', (code) => {
-    if (code === 0) {
-      console.log('✅ Browser installation completed successfully');
-      if (checkBrowserInstalled()) {
-        isBackendReady = true;
-      } else {
-        console.error('❌ Browser installation succeeded but browser not found');
-      }
-    } else {
-      console.error(`❌ Browser installation failed with code ${code}`);
+// 浏览器同步安装（阻塞式，确保完成后才启动服务）
+function installBrowserSync() {
+  return new Promise((resolve, reject) => {
+    if (checkBrowserInstalled()) {
+      isBrowserInstalled = true;
+      resolve();
+      return;
     }
-  });
 
-  installProcess.on('error', (err) => {
-    console.error(`❌ Failed to start browser installation: ${err.message}`);
+    console.warn('⚠️  浏览器未安装，开始自动安装...');
+    isInstallingBrowser = true;
+
+    const installProcess = spawn('npx', ['-y', 'playwright-core', 'install', '--no-shell', 'chromium'], {
+      stdio: 'inherit',
+      env: { ...process.env }
+    });
+
+    installProcess.on('exit', (code) => {
+      isInstallingBrowser = false;
+      if (code === 0) {
+        if (checkBrowserInstalled()) {
+          console.log('✅ 浏览器安装成功');
+          isBrowserInstalled = true;
+          resolve();
+        } else {
+          console.error('❌ 安装完成但浏览器未找到');
+          reject(new Error('Browser not found after installation'));
+        }
+      } else {
+        console.error(`❌ 浏览器安装失败 (退出码: ${code})`);
+        reject(new Error(`Installation failed with code ${code}`));
+      }
+    });
+
+    installProcess.on('error', (err) => {
+      isInstallingBrowser = false;
+      console.error(`❌ 安装进程启动失败: ${err.message}`);
+      reject(err);
+    });
   });
 }
 
-// 启动浏览器后台安装（如果需要）
-installBrowserInBackground();
-
-// 进程管理 - 防止多个实例同时启动
+// 进程锁管理
 const LOCK_FILE = '/tmp/playwright-mcp.lock';
 
 function cleanupLocks() {
   try {
     if (fs.existsSync(LOCK_FILE)) {
       fs.unlinkSync(LOCK_FILE);
-      console.log('✅ Cleaned up stale lock file');
     }
   } catch (err) {
-    console.warn(`⚠️  Could not clean locks: ${err.message}`);
+    // 静默失败
   }
 }
 
-// 启动时清理旧锁
 cleanupLocks();
-
-// 立即启动后端和代理（不等待浏览器安装）
 
 let playwrightProcess = null;
 let isStarting = false;
 let healthCheckTimer = null;
 let consecutiveFailures = 0;
-const MAX_CONSECUTIVE_FAILURES = 2;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 function startPlaywrightBackend() {
   if (playwrightProcess || isStarting) {
-    console.log('⚠️  Backend already starting or running, skipping...');
     return;
   }
   
   isStarting = true;
-  console.log('🚀 Starting Playwright MCP backend (isolated mode)...');
+  console.log('🚀 启动 Playwright MCP 后端...');
   
-  // Start the actual Playwright MCP server
   playwrightProcess = spawn('node', [
     'cli.js',
     '--headless',
     '--browser', 'chromium',
     '--no-sandbox',
     '--port', BACKEND_PORT,
-    '--isolated',                    // 使用临时目录
-    '--shared-browser-context',      // 运行期间共享上下文
-    '--save-session',                // 保存会话
-    '--timeout-action=60000',        // 60秒操作超时
-    '--timeout-navigation=60000',    // 60秒导航超时
+    '--isolated',
+    '--shared-browser-context',
+    '--save-session',
+    '--timeout-action=60000',
+    '--timeout-navigation=60000',
     '--output-dir=/tmp/playwright-output'
   ], {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
-  // Log backend output for debugging
   playwrightProcess.stdout.on('data', (data) => {
     const message = data.toString().trim();
-    console.log(`[Backend] ${message}`);
-    // Detect when backend is ready
+    // 仅记录关键启动信息
     if (message.includes('listening') || message.includes('started') || message.includes(BACKEND_PORT)) {
       isBackendReady = true;
       if (startupTimer) {
         clearTimeout(startupTimer);
         startupTimer = null;
       }
-      console.log('Backend server is ready');
+      console.log('✅ 后端服务已就绪');
     }
   });
 
   playwrightProcess.stderr.on('data', (data) => {
     const errorMsg = data.toString().trim();
-    console.error(`[Backend Error] ${errorMsg}`);
-    
-    // 检测 ETXTBSY 错误（文件锁冲突）
-    if (errorMsg.includes('ETXTBSY') || errorMsg.includes('spawn ETXTBSY')) {
-      console.error('❌ ETXTBSY detected - browser executable is busy');
-      console.log('🔧 Attempting to clean locks and retry...');
+    // 仅记录关键错误
+    if (errorMsg.includes('ETXTBSY')) {
+      console.error('❌ 浏览器文件锁冲突 (ETXTBSY)');
       cleanupLocks();
-      
-      // 等待 2 秒后重试
-      setTimeout(() => {
-        console.log('♻️  Locks cleaned, backend should retry automatically');
-      }, 2000);
-    }
-    
-    // 检测浏览器缺失错误
-    if (errorMsg.includes('Executable doesn\'t exist') || errorMsg.includes('browser') || errorMsg.includes('install')) {
-      console.warn('⚠️  Browser appears to be missing. Auto-installation should handle this.');
+    } else if (errorMsg.includes('not installed') || errorMsg.includes('Executable doesn')) {
+      console.error('❌ 浏览器缺失错误');
     }
   });
 
   playwrightProcess.on('error', (error) => {
-    console.error(`Failed to start backend process: ${error.message}`);
+    console.error(`❌ 后端启动失败: ${error.message}`);
     isStarting = false;
     playwrightProcess = null;
   });
 
   playwrightProcess.on('exit', (code, signal) => {
-    console.error(`Backend process exited with code ${code} and signal ${signal}`);
     isStarting = false;
     playwrightProcess = null;
     if (code !== 0 && code !== null) {
-      console.error('❌ Backend crashed, will not auto-restart');
+      console.error(`❌ 后端异常退出 (code: ${code}, signal: ${signal})`);
     }
   });
 
   isStarting = false;
-  console.log('✅ Backend startup sequence completed');
-  
-  // 启动健康监控
   startHealthMonitoring();
 }
 
-// 立即启动 Playwright 后端
-startPlaywrightBackend();
-
-// 健康监控和自动重启
+// 健康监控
 function startHealthMonitoring() {
   if (healthCheckTimer) {
     clearInterval(healthCheckTimer);
@@ -220,7 +181,7 @@ function startHealthMonitoring() {
   
   healthCheckTimer = setInterval(() => {
     if (!playwrightProcess || !isBackendReady) {
-      return; // 后端未运行或未就绪，跳过检查
+      return;
     }
     
     checkBackendHealth((healthy) => {
@@ -228,13 +189,11 @@ function startHealthMonitoring() {
         consecutiveFailures = 0;
       } else {
         consecutiveFailures++;
-        console.warn(`⚠️  Backend health check failed (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
         
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          console.error('❌ Backend appears to be dead, attempting restart...');
+          console.error(`❌ 后端健康检查失败 ${MAX_CONSECUTIVE_FAILURES} 次，重启中...`);
           consecutiveFailures = 0;
           
-          // 杀死旧进程
           if (playwrightProcess) {
             playwrightProcess.kill('SIGTERM');
             playwrightProcess = null;
@@ -243,35 +202,30 @@ function startHealthMonitoring() {
           isBackendReady = false;
           cleanupLocks();
           
-          // 等待 3 秒后重启
           setTimeout(() => {
-            console.log('♻️  Restarting backend...');
             startPlaywrightBackend();
           }, 3000);
         }
       }
     });
-  }, 10000); // 每 10 秒检查一次
+  }, HEALTH_CHECK_INTERVAL);
 }
 
 
-// Health check function
+// 健康检查
 function checkBackendHealth(callback) {
   const req = http.request({
     hostname: 'localhost',
     port: BACKEND_PORT,
     path: '/',
     method: 'GET',
-    timeout: 1000
+    timeout: 2000
   }, (res) => {
     callback(true);
     req.destroy();
   });
 
-  req.on('error', () => {
-    callback(false);
-  });
-
+  req.on('error', () => callback(false));
   req.on('timeout', () => {
     callback(false);
     req.destroy();
@@ -280,16 +234,14 @@ function checkBackendHealth(callback) {
   req.end();
 }
 
-// Wait for backend to be ready
+// 等待后端就绪
 function waitForBackend(callback) {
   if (isBackendReady) {
     callback();
     return;
   }
 
-  console.log('Waiting for backend to start...');
   const startTime = Date.now();
-
   const checkInterval = setInterval(() => {
     checkBackendHealth((healthy) => {
       if (healthy) {
@@ -299,24 +251,81 @@ function waitForBackend(callback) {
           startupTimer = null;
         }
         isBackendReady = true;
-        console.log(`Backend ready after ${Date.now() - startTime}ms`);
         callback();
       }
     });
-  }, HEALTH_CHECK_INTERVAL);
+  }, 5000);
 
   startupTimer = setTimeout(() => {
     clearInterval(checkInterval);
-    console.error('Backend startup timeout, but continuing anyway');
+    console.error('⚠️  后端启动超时');
     callback();
   }, STARTUP_TIMEOUT);
 }
 
-// Forward request with retry logic
-function forwardRequest(req, res, retryCount = 0) {
-  const maxRetries = 3;
-  const retryDelay = 1000; // 1 second
+// 浏览器预热（验证浏览器可用性）
+async function warmupBrowser() {
+  return new Promise((resolve) => {
+    const warmupReq = http.request({
+      hostname: 'localhost',
+      port: BACKEND_PORT,
+      path: '/mcp',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 10000
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          console.log('✅ 浏览器预热成功');
+        }
+        resolve();
+      });
+    });
 
+    warmupReq.on('error', () => {
+      console.warn('⚠️  预热失败，但继续运行');
+      resolve();
+    });
+
+    warmupReq.on('timeout', () => {
+      warmupReq.destroy();
+      console.warn('⚠️  预热超时');
+      resolve();
+    });
+
+    warmupReq.write(JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'tools/list',
+      id: 'warmup'
+    }));
+    warmupReq.end();
+  });
+}
+
+// 验证浏览器健康（使用独立脚本）
+function verifyBrowserHealth() {
+  return new Promise((resolve) => {
+    const testProcess = spawn('node', ['verify-browser.js'], {
+      stdio: 'inherit',
+      timeout: 10000,
+      env: { ...process.env }
+    });
+
+    testProcess.on('exit', (code) => {
+      resolve(code === 0);
+    });
+
+    testProcess.on('error', (err) => {
+      console.error(`❌ 验证进程启动失败: ${err.message}`);
+      resolve(false);
+    });
+  });
+}
+
+// 转发请求（带指数退避重试）
+function forwardRequest(req, res, retryCount = 0) {
   const proxyHeaders = { ...req.headers };
   proxyHeaders.host = `localhost:${BACKEND_PORT}`;
 
@@ -328,57 +337,47 @@ function forwardRequest(req, res, retryCount = 0) {
     headers: proxyHeaders,
     timeout: REQUEST_TIMEOUT
   }, (proxyRes) => {
-    // Forward response headers
     Object.keys(proxyRes.headers).forEach(key => {
       res.setHeader(key, proxyRes.headers[key]);
     });
-
     res.writeHead(proxyRes.statusCode);
     proxyRes.pipe(res);
   });
 
   proxyReq.on('error', (error) => {
-    console.error(`Proxy request error (attempt ${retryCount + 1}): ${error.message}`);
-
-    if (retryCount < maxRetries && (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET')) {
-      // Retry after delay
+    const canRetry = retryCount < RETRY_DELAYS.length && 
+                     (error.code === 'ECONNREFUSED' || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT');
+    
+    if (canRetry) {
+      const delay = RETRY_DELAYS[retryCount];
       setTimeout(() => {
-        console.log(`Retrying request (attempt ${retryCount + 2})...`);
         forwardRequest(req, res, retryCount + 1);
-      }, retryDelay);
+      }, delay);
     } else {
-      // Send error response
+      console.error(`❌ 请求失败: ${error.message}`);
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          error: 'Backend service unavailable',
-          message: error.message,
-          code: error.code
+          error: 'Backend unavailable',
+          message: error.message
         }));
       }
     }
   });
 
   proxyReq.on('timeout', () => {
-    console.error('Proxy request timeout');
     proxyReq.destroy();
     if (!res.headersSent) {
       res.writeHead(504, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        error: 'Gateway timeout',
-        message: 'Backend request timeout'
-      }));
+      res.end(JSON.stringify({ error: 'Request timeout' }));
     }
   });
 
   req.pipe(proxyReq);
 }
 
-// Create a proxy server that binds to 0.0.0.0
+// 代理服务器
 const proxyServer = http.createServer((req, res) => {
-  console.log(`→ ${req.method} ${req.url} from ${req.headers.host}`);
-  
-  // Add CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -390,82 +389,94 @@ const proxyServer = http.createServer((req, res) => {
     return;
   }
 
-  // Health check endpoint
+  // 健康检查
   if (req.url === '/health' || req.url === '/healthz') {
-    if (isBackendReady) {
+    if (isBackendReady && isBrowserInstalled) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'healthy', backend: 'ready' }));
+      res.end(JSON.stringify({ status: 'healthy' }));
+    } else if (isInstallingBrowser) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'installing', message: '浏览器安装中，请稍候...' }));
     } else {
       res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'starting', backend: 'not ready' }));
+      res.end(JSON.stringify({ status: 'starting' }));
     }
     return;
   }
 
-  // MCP 端点 - 即使后端未就绪也要尝试转发（后端可能已启动但未通过健康检查）
+  // 浏览器安装中，阻塞所有请求
+  if (isInstallingBrowser) {
+    res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+    res.end(JSON.stringify({
+      error: 'Service initializing',
+      message: '浏览器安装中，请 30 秒后重试'
+    }));
+    return;
+  }
+
+  // 浏览器未安装，阻塞所有请求
+  if (!isBrowserInstalled) {
+    res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '60' });
+    res.end(JSON.stringify({
+      error: 'Browser not ready',
+      message: '浏览器未就绪，请稍后重试'
+    }));
+    return;
+  }
+
+  // 后端未就绪
   const isMcpEndpoint = req.url === '/mcp' || req.url.startsWith('/mcp/');
-  
-  // 非-MCP 请求且后端未就绪时返回 503
   if (!isMcpEndpoint && !isBackendReady) {
-    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '10' });
     res.end(JSON.stringify({
       error: 'Service starting',
-      message: 'Backend is initializing, please retry in a few seconds'
+      message: '服务启动中，请稍后重试'
     }));
     return;
   }
 
-  // 并发连接限制（避免 ETXTBSY 错误）
-  if (isMcpEndpoint && activeConnections >= MAX_CONCURRENT_CONNECTIONS) {
-    console.warn(`⚠️  Connection rejected: ${activeConnections} active connections (max: ${MAX_CONCURRENT_CONNECTIONS})`);
-    res.writeHead(429, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      error: 'Too many concurrent connections',
-      message: 'Another client is currently using the browser. Please wait and try again in a few moments.',
-      activeConnections: activeConnections,
-      maxConnections: MAX_CONCURRENT_CONNECTIONS
-    }));
-    return;
-  }
-
-  // 增加活跃连接计数
-  if (isMcpEndpoint) {
-    activeConnections++;
-    console.log(`✅ Active connections: ${activeConnections}`);
-    
-    // 请求完成后减少计数
-    res.on('finish', () => {
-      activeConnections--;
-      console.log(`✅ Connection closed. Active connections: ${activeConnections}`);
-    });
-    
-    res.on('close', () => {
-      if (activeConnections > 0) {
-        activeConnections--;
-        console.log(`⚠️  Connection aborted. Active connections: ${activeConnections}`);
-      }
-    });
-  }
-
-  // Forward the request to the actual server
   forwardRequest(req, res);
 });
 
-// 立即启动代理服务器（不等待后端，让 Smithery 扫描器可以连接）
-proxyServer.listen(PORT, HOST, () => {
-  console.log(`Proxy server listening on http://${HOST}:${PORT}`);
-  console.log(`Forwarding requests to http://localhost:${BACKEND_PORT}`);
-  console.log('Server ready for connections. Backend is starting in background...');
-  
-  // 后台等待后端就绪
-  waitForBackend(() => {
-    console.log('✅ Full service ready - backend and proxy both operational');
-  });
-});
+// 启动流程：验证 → 安装 → 启动 → 预热
+(async () => {
+  try {
+    // 步骤 1: 验证浏览器健康
+    console.log('🔍 检查浏览器状态...');
+    const browserHealthy = await verifyBrowserHealth();
+    
+    // 步骤 2: 如果浏览器不健康，尝试安装
+    if (!browserHealthy) {
+      console.warn('⚠️  浏览器不健康，尝试重新安装...');
+      await installBrowserSync();
+    }
+    
+    // 步骤 3: 启动后端
+    startPlaywrightBackend();
+    
+    // 步骤 4: 启动代理服务器
+    proxyServer.listen(PORT, HOST, () => {
+      console.log(`✅ 代理服务器已启动: http://${HOST}:${PORT}`);
+      
+      // 步骤 5: 等待后端就绪
+      waitForBackend(async () => {
+        console.log('✅ 后端就绪，开始预热...');
+        
+        // 步骤 6: 预热浏览器
+        await warmupBrowser();
+        
+        console.log('✅ 服务完全就绪，可以接受请求');
+      });
+    });
+  } catch (err) {
+    console.error(`❌ 启动失败: ${err.message}`);
+    process.exit(1);
+  }
+})();
 
-// Handle process cleanup
+// 进程清理
 process.on('SIGTERM', () => {
-  console.log('Shutting down...');
+  console.log('🛑 服务关闭中...');
   cleanupLocks();
   if (playwrightProcess) playwrightProcess.kill();
   proxyServer.close();
@@ -473,13 +484,11 @@ process.on('SIGTERM', () => {
 });
 
 process.on('SIGINT', () => {
-  console.log('Shutting down...');
+  console.log('🛑 服务关闭中...');
   cleanupLocks();
   if (playwrightProcess) playwrightProcess.kill();
   proxyServer.close();
   process.exit(0);
 });
 
-process.on('exit', () => {
-  cleanupLocks();
-});
+process.on('exit', cleanupLocks);
