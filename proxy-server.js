@@ -325,7 +325,7 @@ const proxyServer = http.createServer((req, res) => {
         const method = mcpRequest.method || '';
         
         // notifications/* 单向消息：返回 202 Accepted
-        if (method.startsWith('notifications/') || !mcpRequest.id) {
+        if (method.startsWith('notifications/') || mcpRequest.id === undefined) {
           res.writeHead(202);
           res.end();
           return;
