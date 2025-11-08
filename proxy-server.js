@@ -7,14 +7,15 @@ const agent = new http.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSocket
 const PORT = process.env.PORT || 8081;
 const HOST = '0.0.0.0';
 const BACKEND_PORT = 8082;
-const STARTUP_TIMEOUT = 60000; // 60秒启动超时
+const STARTUP_TIMEOUT = 58000; // 58秒启动超时（留 2s 缓冲）
 const HEALTH_CHECK_INTERVAL = 25000; // 25秒健康检查
-const REQUEST_TIMEOUT = 60000; // 60秒请求超时
+const REQUEST_TIMEOUT = 58000; // 58秒请求超时
 const RETRY_DELAYS = [1000, 2000, 5000]; // 重试延迟：1s, 2s, 5s（指数退避）
 
 let isBackendReady = false;
 let isBrowserInstalled = false;
 let startupTimer = null;
+let lastSuccessfulRequestTime = Date.now(); // 最后一次成功请求时间
 
 console.log('========================================');
 console.log(`🚀 启动 Playwright MCP 代理服务器 ${HOST}:${PORT}`);
@@ -61,9 +62,6 @@ cleanupLocks();
 
 let playwrightProcess = null;
 let isStarting = false;
-let healthCheckTimer = null;
-let consecutiveFailures = 0;
-const MAX_CONSECUTIVE_FAILURES = 3;
 
 function startPlaywrightBackend() {
   if (playwrightProcess || isStarting) {
@@ -82,8 +80,8 @@ function startPlaywrightBackend() {
     '--isolated',
     '--shared-browser-context',
     '--save-session',
-    '--timeout-action=60000',
-    '--timeout-navigation=60000',
+    '--timeout-action=58000',
+    '--timeout-navigation=58000',
     '--output-dir=/tmp/playwright-output'
   ], {
     stdio: ['ignore', 'pipe', 'pipe']
@@ -128,47 +126,32 @@ function startPlaywrightBackend() {
   });
 
   isStarting = false;
-  startHealthMonitoring();
 }
 
-// 健康监控
-function startHealthMonitoring() {
-  if (healthCheckTimer) {
-    clearInterval(healthCheckTimer);
-  }
+// 按需健康检查（仅在请求失败时触发）
+function triggerHealthCheckIfNeeded() {
+  const timeSinceLastSuccess = Date.now() - lastSuccessfulRequestTime;
   
-  healthCheckTimer = setInterval(() => {
-    if (!playwrightProcess || !isBackendReady) {
-      return;
-    }
+  // 若距上次成功请求 > 60s，执行健康检查
+  if (timeSinceLastSuccess > 60000) {
+    console.log(`⌛ 后端 ${Math.floor(timeSinceLastSuccess / 1000)}s 未响应，执行健康检查...`);
     
     checkBackendHealth((healthy) => {
-      if (healthy) {
-        consecutiveFailures = 0;
-      } else {
-        consecutiveFailures++;
+      if (!healthy && playwrightProcess) {
+        console.error('❌ 后端健康检查失败，重启中...');
         
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          console.error(`❌ 后端健康检查失败 ${MAX_CONSECUTIVE_FAILURES} 次，重启中...`);
-          consecutiveFailures = 0;
-          
-          if (playwrightProcess) {
-            playwrightProcess.kill('SIGTERM');
-            playwrightProcess = null;
-          }
-          
-          isBackendReady = false;
-          cleanupLocks();
-          
-          setTimeout(() => {
-            startPlaywrightBackend();
-          }, 3000);
-        }
+        playwrightProcess.kill('SIGTERM');
+        playwrightProcess = null;
+        isBackendReady = false;
+        cleanupLocks();
+        
+        setTimeout(() => {
+          startPlaywrightBackend();
+        }, 3000);
       }
     });
-  }, HEALTH_CHECK_INTERVAL);
+  }
 }
-
 
 // 健康检查
 function checkBackendHealth(callback) {
@@ -236,6 +219,9 @@ function forwardRequest(req, res, retryCount = 0) {
     timeout: REQUEST_TIMEOUT,
     agent
   }, (proxyRes) => {
+    // 记录成功请求时间
+    lastSuccessfulRequestTime = Date.now();
+    
     Object.keys(proxyRes.headers).forEach(key => {
       res.setHeader(key, proxyRes.headers[key]);
     });
@@ -253,6 +239,8 @@ function forwardRequest(req, res, retryCount = 0) {
         forwardRequest(req, res, retryCount + 1);
       }, delay);
     } else {
+      // 重试失败，触发健康检查
+      triggerHealthCheckIfNeeded();
       console.error(`❌ 请求失败: ${error.message}`);
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -370,10 +358,10 @@ const proxyServer = http.createServer((req, res) => {
   forwardRequest(req, res);
 });
 
-// Server keep-alive and timeout tuning (60s)
-proxyServer.keepAliveTimeout = 60000;
-proxyServer.headersTimeout = 60000;
-proxyServer.requestTimeout = 60000;
+// Server keep-alive and timeout tuning (58s)
+proxyServer.keepAliveTimeout = 58000;
+proxyServer.headersTimeout = 58000;
+proxyServer.requestTimeout = 58000;
 
 // 启动流程（立即启动后端，不等待浏览器检查）
 (async () => {

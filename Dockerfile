@@ -61,7 +61,7 @@ USER ${USERNAME}
 
 # 将浏览器直接固化到镜像
 COPY --from=browser --chown=${USERNAME}:${USERNAME} /ms-playwright /ms-playwright
-COPY --chown=${USERNAME}:${USERNAME} cli.js package.json smithery-config.json proxy-server.js ./
+COPY --chown=${USERNAME}:${USERNAME} cli.js package.json proxy-server.js ./
 
 # Set environment variables to force binding to all interfaces
 ENV HOST=0.0.0.0

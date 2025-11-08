@@ -36,11 +36,11 @@ startCommand:
       timeoutAction:
         type: "number"
         description: "Action timeout in milliseconds"
-        default: 30000
+        default: 58000
       timeoutNavigation:
         type: "number"
         description: "Navigation timeout in milliseconds"
-        default: 60000
+        default: 58000
     additionalProperties: true
   exampleConfig:
     browserName: "chromium"
@@ -48,5 +48,5 @@ startCommand:
     capabilities: ["tabs", "install", "pdf", "vision"]
     outputDir: "/tmp/playwright-output"
     imageResponses: "allow"
-    timeoutAction: 30000
-    timeoutNavigation: 60000
+    timeoutAction: 58000
+    timeoutNavigation: 58000
