@@ -1,47 +1,40 @@
-﻿#!/bin/sh
-# 娴忚鍣ㄦ櫤鑳藉垵濮嬪寲鑴氭湰
-# 鐢ㄩ€旓細妫€鏌ュ嵎鍐呮祻瑙堝櫒鏄惁瀛樺湪锛屼笉瀛樺湪鍒欎粠闀滃儚澶囦唤澶嶅埗
+#!/bin/sh
+# 浏览器缓存初始化脚本
+# 作用：将镜像内备份浏览器复制到持久卷（首次/卷为空时）。
 
-set -e
+set -eu
 
 BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/ms-playwright}"
 BACKUP_PATH="${PLAYWRIGHT_BROWSERS_BACKUP:-/tmp/playwright-browsers-backup}"
 
 echo "=========================================="
-echo "馃攳 娴忚鍣ㄥ垵濮嬪寲妫€鏌?
-echo "鐩爣璺緞: ${BROWSERS_PATH}"
-echo "澶囦唤璺緞: ${BACKUP_PATH}"
+echo "🔧 浏览器初始化检查"
+echo "目标路径: ${BROWSERS_PATH}"
+echo "备份路径: ${BACKUP_PATH}"
 echo "=========================================="
 
-# 妫€鏌ュ嵎鍐呮槸鍚﹀凡鏈夋祻瑙堝櫒
-if [ -d "${BROWSERS_PATH}" ] && [ "$(ls -A ${BROWSERS_PATH} 2>/dev/null | grep -c 'chromium')" -gt 0 ]; then
-  echo "鉁?鍗峰唴娴忚鍣ㄥ凡瀛樺湪锛岃烦杩囧垵濮嬪寲"
-  ls -lh "${BROWSERS_PATH}"
-else
-  echo "鈿狅笍  鍗峰唴娴忚鍣ㄤ笉瀛樺湪锛屽紑濮嬩粠澶囦唤澶嶅埗..."
-  
-  # 纭繚鐩爣鐩綍瀛樺湪
-  mkdir -p "${BROWSERS_PATH}"
-  
-  # 浠庡浠藉鍒跺埌鍗?
-  if [ -d "${BACKUP_PATH}" ] && [ "$(ls -A ${BACKUP_PATH} 2>/dev/null | wc -l)" -gt 0 ]; then
-    echo "馃摝 澶嶅埗娴忚鍣ㄦ枃浠?.."
-    cp -r "${BACKUP_PATH}"/* "${BROWSERS_PATH}/"
-    
-    # 楠岃瘉澶嶅埗缁撴灉
-    if [ "$(ls -A ${BROWSERS_PATH} 2>/dev/null | grep -c 'chromium')" -gt 0 ]; then
-      echo "鉁?娴忚鍣ㄥ垵濮嬪寲鎴愬姛"
-      ls -lh "${BROWSERS_PATH}"
-    else
-      echo "鉂?澶嶅埗鍚庢湭鎵惧埌娴忚鍣ㄦ枃浠?
-      exit 1
-    fi
-  else
-    echo "鉂?澶囦唤鐩綍涓虹┖鎴栦笉瀛樺湪"
-    exit 1
-  fi
+# 若持久卷已有 chromium，则跳过复制
+if [ -d "${BROWSERS_PATH}" ] && ls -A "${BROWSERS_PATH}" 2>/dev/null | grep -q chromium; then
+  echo "✅ 已检测到已存在的浏览器缓存，跳过初始化"
+  exit 0
 fi
 
-echo "=========================================="
-echo "鉁?娴忚鍣ㄥ垵濮嬪寲瀹屾垚"
-echo "=========================================="
+# 确保目标目录存在
+mkdir -p "${BROWSERS_PATH}"
+
+# 从镜像内备份复制到持久卷
+if [ -d "${BACKUP_PATH}" ] && [ "$(ls -A "${BACKUP_PATH}" 2>/dev/null | wc -l)" -gt 0 ]; then
+  echo "📦 正在复制浏览器文件..."
+  cp -r "${BACKUP_PATH}"/* "${BROWSERS_PATH}/"
+
+  # 验证复制结果
+  if ls -A "${BROWSERS_PATH}" 2>/dev/null | grep -q chromium; then
+    echo "✅ 浏览器初始化完成"
+  else
+    echo "❌ 未在 ${BROWSERS_PATH} 找到 chromium 目录"
+    exit 1
+  fi
+else
+  echo "❌ 备份目录为空或不存在：${BACKUP_PATH}"
+  exit 1
+fi

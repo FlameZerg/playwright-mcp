@@ -2,6 +2,7 @@
 
 const http = require('http');
 const { spawn } = require('child_process');
+const agent = new http.Agent({ keepAlive: true, keepAliveMsecs: 60000, maxSockets: 32, maxFreeSockets: 8 });
 
 const PORT = process.env.PORT || 8081;
 const HOST = '0.0.0.0';
@@ -232,7 +233,8 @@ function forwardRequest(req, res, retryCount = 0) {
     path: req.url,
     method: req.method,
     headers: proxyHeaders,
-    timeout: REQUEST_TIMEOUT
+    timeout: REQUEST_TIMEOUT,
+    agent
   }, (proxyRes) => {
     Object.keys(proxyRes.headers).forEach(key => {
       res.setHeader(key, proxyRes.headers[key]);
@@ -279,6 +281,7 @@ const proxyServer = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id, mcp-protocol-version');
+  res.setHeader('Connection', 'keep-alive');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200);
@@ -367,6 +370,11 @@ const proxyServer = http.createServer((req, res) => {
 
   forwardRequest(req, res);
 });
+
+// Server keep-alive and timeout tuning (60s)
+proxyServer.keepAliveTimeout = 60000;
+proxyServer.headersTimeout = 60000;
+proxyServer.requestTimeout = 60000;
 
 // 启动流程（支持后台异步浏览器初始化）
 (async () => {
