@@ -305,63 +305,49 @@ const proxyServer = http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0];
   const isMcpEndpoint = urlPath === '/mcp' || urlPath.startsWith('/mcp/');
   
-  // MCP 端点：后端未就绪时等待（最多 45 秒）
+  // MCP 端点：后端未就绪时立即返回占位响应（兼容 Smithery scanner 10s 超时）
   if (isMcpEndpoint && req.method === 'POST' && !isBackendReady) {
-    const startWait = Date.now();
-    const maxWaitTime = 45000; // 45秒超时
-    
-    const waitForBackendAndForward = () => {
-      if (isBackendReady) {
-        forwardRequest(req, res);
-      } else if (Date.now() - startWait < maxWaitTime) {
-        setTimeout(waitForBackendAndForward, 500);
-      } else {
-        // 超时返回初始化中响应
-        let body = '';
-        req.on('data', chunk => body += chunk.toString());
-        req.on('end', () => {
-          try {
-            const mcpRequest = JSON.parse(body);
-            const method = mcpRequest.method || '';
-            
-            // notifications/
-            if (method.startsWith('notifications/') || !mcpRequest.id) {
-              res.writeHead(200, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({}));
-              return;
-            }
-            
-            // 返回无能力的初始化响应
-            res.writeHead(200, { 
-              'Content-Type': 'application/json',
-              'Retry-After': '10'
-            });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              id: mcpRequest.id,
-              result: {
-                protocolVersion: '2025-06-18',
-                capabilities: {
-                  tools: {},
-                  resources: {},
-                  prompts: {}
-                },
-                serverInfo: {
-                  name: 'playwright-mcp',
-                  version: '0.0.45'
-                },
-                instructions: '浏览器初始化超时，请稍后再试'
-              }
-            }));
-          } catch (err) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
-          }
+    let body = '';
+    req.on('data', chunk => body += chunk.toString());
+    req.on('end', () => {
+      try {
+        const mcpRequest = JSON.parse(body);
+        const method = mcpRequest.method || '';
+        
+        // notifications/* 单向消息：返回 200 OK（空响应）
+        if (method.startsWith('notifications/') || !mcpRequest.id) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({}));
+          return;
+        }
+        
+        // 返回无能力的初始化响应（立即，不等待后端）
+        res.writeHead(200, { 
+          'Content-Type': 'application/json',
+          'Retry-After': '5'
         });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: mcpRequest.id,
+          result: {
+            protocolVersion: '2025-06-18',
+            capabilities: {
+              tools: {},
+              resources: {},
+              prompts: {}
+            },
+            serverInfo: {
+              name: 'playwright-mcp',
+              version: '0.0.45'
+            },
+            instructions: '浏览器正在初始化，请稍后重试（约 5-10 秒）'
+          }
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON-RPC request' }));
       }
-    };
-    
-    waitForBackendAndForward();
+    });
     return;
   }
   
