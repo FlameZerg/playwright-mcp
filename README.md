@@ -1,3 +1,5 @@
+[![smithery badge](https://smithery.ai/badge/@FlameZerg/playwright-mcp)](https://smithery.ai/server/@FlameZerg/playwright-mcp)
+
 ## Playwright MCP
 
 [![smithery badge](https://smithery.ai/badge/@FlameZerg/playwright-mcp)](https://smithery.ai/server/@FlameZerg/playwright-mcp)
