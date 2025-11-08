@@ -315,29 +315,40 @@ const proxyServer = http.createServer((req, res) => {
   forwardRequest(req, res);
 });
 
-// 启动流程（依赖 init-browser.sh 已完成浏览器初始化）
+// 启动流程（支持后台异步浏览器初始化）
 (async () => {
   try {
-    // 检查浏览器状态
-    isBrowserInstalled = checkBrowserInstalled();
-    
-    if (!isBrowserInstalled) {
-      console.error('❌ 浏览器未初始化！init-browser.sh 可能失败');
-      process.exit(1);
-    }
-    
-    // 启动后端
-    startPlaywrightBackend();
-    
-    // 启动代理服务器
+    // 立即启动代理服务器（不等待浏览器）
     proxyServer.listen(PORT, HOST, () => {
       console.log(`✅ 代理服务器已启动: http://${HOST}:${PORT}`);
-      
-      // 后台等待后端就绪
-      waitForBackend(() => {
-        console.log('✅ 服务就绪');
-      });
+      console.log('⏳ 等待浏览器初始化...');
     });
+    
+    // 后台等待浏览器初始化
+    const browserCheckInterval = setInterval(() => {
+      if (checkBrowserInstalled()) {
+        clearInterval(browserCheckInterval);
+        isBrowserInstalled = true;
+        console.log('✅ 浏览器初始化完成');
+        
+        // 启动 Playwright 后端
+        startPlaywrightBackend();
+        
+        // 等待后端就绪
+        waitForBackend(() => {
+          console.log('✅ 服务就绪');
+        });
+      }
+    }, 1000); // 每秒检查
+    
+    // 超时保护（60秒）
+    setTimeout(() => {
+      if (!isBrowserInstalled) {
+        clearInterval(browserCheckInterval);
+        console.error('❌ 浏览器初始化超时');
+        process.exit(1);
+      }
+    }, 60000);
   } catch (err) {
     console.error(`❌ 启动失败: ${err.message}`);
     process.exit(1);

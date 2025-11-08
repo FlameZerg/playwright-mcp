@@ -73,6 +73,11 @@ USER ${USERNAME}
 COPY --from=browser --chown=${USERNAME}:${USERNAME} ${PLAYWRIGHT_BROWSERS_PATH} /tmp/playwright-browsers-backup
 COPY --chown=${USERNAME}:${USERNAME} cli.js package.json smithery-config.json proxy-server.js verify-browser.js init-browser.sh ./
 
+# 设置脚本执行权限
+USER root
+RUN chmod +x init-browser.sh
+USER ${USERNAME}
+
 # 运行时验证备份
 RUN ls -la /tmp/playwright-browsers-backup || echo "Browser backup check" && \
   echo "✅ Runtime stage ready"
@@ -88,5 +93,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
       process.exit(res.statusCode === 200 ? 0 : 1); \
     }).on('error', () => process.exit(1));"
 
-# 启动流程：先初始化浏览器（如果需要），再启动代理服务器
-ENTRYPOINT ["/bin/sh", "-c", "./init-browser.sh && node proxy-server.js"]
+# 启动流程：浏览器初始化和服务启动并行（后台初始化，服务先响应）
+COPY --chown=${USERNAME}:${USERNAME} entrypoint.sh ./
+USER root
+RUN chmod +x entrypoint.sh
+USER ${USERNAME}
+ENTRYPOINT ["./entrypoint.sh"]
