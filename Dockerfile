@@ -51,6 +51,7 @@ ENV NODE_ENV=production
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 ENV LANGUAGE=zh_CN:zh
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_MCP_OUTPUT_DIR=/tmp/playwright-output
 
 # Set the correct ownership for the runtime user on production `node_modules`
