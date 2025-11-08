@@ -212,7 +212,7 @@ function waitForBackend(callback) {
         callback();
       }
     });
-  }, 5000);
+  }, 500); // 500ms 快速轮询
 
   startupTimer = setTimeout(() => {
     clearInterval(checkInterval);
