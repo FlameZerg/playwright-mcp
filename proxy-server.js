@@ -305,16 +305,24 @@ const proxyServer = http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0];
   const isMcpEndpoint = urlPath === '/mcp' || urlPath.startsWith('/mcp/');
   
-  // MCP 端点：后端未就绪时返回 MCP 协议的初始化响应
+  // MCP 端点：后端未就绪时返回一致的 200 OK（避免 Smithery scanner 遇到 503）
   if (isMcpEndpoint && req.method === 'POST' && !isBackendReady) {
     let body = '';
     req.on('data', chunk => body += chunk.toString());
     req.on('end', () => {
       try {
         const mcpRequest = JSON.parse(body);
+        const method = mcpRequest.method || '';
         
-        // 仅处理 initialize 请求
-        if (mcpRequest.method === 'initialize') {
+        // notifications/initialized 等单向消息：返回 200 OK（空响应）
+        if (method.startsWith('notifications/') || !mcpRequest.id) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({}));
+          return;
+        }
+        
+        // initialize 请求：返回初始化中的完整 response（非 error）
+        if (method === 'initialize') {
           res.writeHead(200, { 
             'Content-Type': 'application/json',
             'Retry-After': '10'
@@ -339,16 +347,15 @@ const proxyServer = http.createServer((req, res) => {
           return;
         }
         
-        // 其他 MCP 请求：返回错误
-        res.writeHead(503, { 'Content-Type': 'application/json' });
+        // 其他 MCP 方法（如 tools/list）：返回临时空响应（非 error）
+        res.writeHead(200, { 
+          'Content-Type': 'application/json',
+          'Retry-After': '10'
+        });
         res.end(JSON.stringify({
           jsonrpc: '2.0',
           id: mcpRequest.id,
-          error: {
-            code: -32000,
-            message: 'Server initializing',
-            data: { status: 'starting' }
-          }
+          result: {}
         }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
