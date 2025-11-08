@@ -41,7 +41,9 @@ COPY *.json *.js *.ts .
 # - Cache is reused when only source code changes
 FROM base AS browser
 
-# 安装浏览器（简化验证）
+ARG PLAYWRIGHT_BROWSERS_PATH
+
+# 安装浏览器到备份目录（用于首次启动时复制到卷）
 RUN npx -y playwright-core install --no-shell chromium && \
   ls -la ${PLAYWRIGHT_BROWSERS_PATH} && \
   echo "✅ Browser installation completed"
@@ -56,37 +58,35 @@ ARG USERNAME=node
 ENV NODE_ENV=production
 ENV PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}
 ENV PLAYWRIGHT_MCP_OUTPUT_DIR=/tmp/playwright-output
+ENV PLAYWRIGHT_BROWSERS_BACKUP=/tmp/playwright-browsers-backup
 
 # Set the correct ownership for the runtime user on production `node_modules`
 RUN chown -R ${USERNAME}:${USERNAME} node_modules
 
-# 创建浏览器配置和输出目录
-RUN mkdir -p /app/browser-profile /tmp/playwright-output && \
-  chown -R ${USERNAME}:${USERNAME} /app/browser-profile /tmp/playwright-output
+# 创建必要的目录结构
+RUN mkdir -p /app/browser-profile /tmp/playwright-output /tmp/playwright-browsers-backup /app/storage && \
+  chown -R ${USERNAME}:${USERNAME} /app/browser-profile /tmp/playwright-output /tmp/playwright-browsers-backup /app/storage
 
 USER ${USERNAME}
 
-COPY --from=browser --chown=${USERNAME}:${USERNAME} ${PLAYWRIGHT_BROWSERS_PATH} ${PLAYWRIGHT_BROWSERS_PATH}
-COPY --chown=${USERNAME}:${USERNAME} cli.js package.json smithery-config.json proxy-server.js verify-browser.js ./
+# 将浏览器复制到备份目录（镜像内保留副本）
+COPY --from=browser --chown=${USERNAME}:${USERNAME} ${PLAYWRIGHT_BROWSERS_PATH} /tmp/playwright-browsers-backup
+COPY --chown=${USERNAME}:${USERNAME} cli.js package.json smithery-config.json proxy-server.js verify-browser.js init-browser.sh ./
 
-# 运行时验证浏览器
-RUN ls -la ${PLAYWRIGHT_BROWSERS_PATH} || echo "Browser path check" && \
+# 运行时验证备份
+RUN ls -la /tmp/playwright-browsers-backup || echo "Browser backup check" && \
   echo "✅ Runtime stage ready"
 
 # Set environment variables to force binding to all interfaces
 ENV HOST=0.0.0.0
 ENV PORT=8081
 
-# 启用浏览器自动安装功能（如果缺失）
-ENV PLAYWRIGHT_AUTO_INSTALL=true
-
 # 健康检查 - 验证代理服务器可用
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD node -e "const http = require('http'); \
     http.get('http://localhost:8081/health', (res) => { \
       process.exit(res.statusCode === 200 ? 0 : 1); \
     }).on('error', () => process.exit(1));"
 
-# Use proxy server to bind to 0.0.0.0 and forward to Playwright MCP server
-# This works around the server's hardcoded localhost binding
-ENTRYPOINT ["node", "proxy-server.js"]
+# 启动流程：先初始化浏览器（如果需要），再启动代理服务器
+ENTRYPOINT ["/bin/sh", "-c", "./init-browser.sh && node proxy-server.js"]

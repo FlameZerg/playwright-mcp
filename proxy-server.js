@@ -13,7 +13,6 @@ const RETRY_DELAYS = [1000, 2000, 5000]; // 重试延迟：1s, 2s, 5s（指数�
 
 let isBackendReady = false;
 let isBrowserInstalled = false;
-let isInstallingBrowser = false;
 let startupTimer = null;
 
 console.log('========================================');
@@ -22,7 +21,7 @@ console.log(`   环境: ${process.env.NODE_ENV || 'production'}`);
 console.log(`   浏览器路径: ${process.env.PLAYWRIGHT_BROWSERS_PATH}`);
 console.log('========================================');
 
-// 浏览器检查与安装
+// 浏览器检查（仅检查，不安装）
 const fs = require('fs');
 const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright';
 
@@ -42,48 +41,6 @@ function checkBrowserInstalled() {
     console.error(`❌ 浏览器检查失败: ${err.message}`);
     return false;
   }
-}
-
-// 浏览器同步安装（阻塞式，确保完成后才启动服务）
-function installBrowserSync() {
-  return new Promise((resolve, reject) => {
-    if (checkBrowserInstalled()) {
-      isBrowserInstalled = true;
-      resolve();
-      return;
-    }
-
-    console.warn('⚠️  浏览器未安装，开始自动安装...');
-    isInstallingBrowser = true;
-
-    const installProcess = spawn('npx', ['-y', 'playwright-core', 'install', '--no-shell', 'chromium'], {
-      stdio: 'inherit',
-      env: { ...process.env }
-    });
-
-    installProcess.on('exit', (code) => {
-      isInstallingBrowser = false;
-      if (code === 0) {
-        if (checkBrowserInstalled()) {
-          console.log('✅ 浏览器安装成功');
-          isBrowserInstalled = true;
-          resolve();
-        } else {
-          console.error('❌ 安装完成但浏览器未找到');
-          reject(new Error('Browser not found after installation'));
-        }
-      } else {
-        console.error(`❌ 浏览器安装失败 (退出码: ${code})`);
-        reject(new Error(`Installation failed with code ${code}`));
-      }
-    });
-
-    installProcess.on('error', (err) => {
-      isInstallingBrowser = false;
-      console.error(`❌ 安装进程启动失败: ${err.message}`);
-      reject(err);
-    });
-  });
 }
 
 // 进程锁管理
@@ -263,66 +220,6 @@ function waitForBackend(callback) {
   }, STARTUP_TIMEOUT);
 }
 
-// 浏览器预热（验证浏览器可用性）
-async function warmupBrowser() {
-  return new Promise((resolve) => {
-    const warmupReq = http.request({
-      hostname: 'localhost',
-      port: BACKEND_PORT,
-      path: '/mcp',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 10000
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode === 200) {
-          console.log('✅ 浏览器预热成功');
-        }
-        resolve();
-      });
-    });
-
-    warmupReq.on('error', () => {
-      console.warn('⚠️  预热失败，但继续运行');
-      resolve();
-    });
-
-    warmupReq.on('timeout', () => {
-      warmupReq.destroy();
-      console.warn('⚠️  预热超时');
-      resolve();
-    });
-
-    warmupReq.write(JSON.stringify({
-      jsonrpc: '2.0',
-      method: 'tools/list',
-      id: 'warmup'
-    }));
-    warmupReq.end();
-  });
-}
-
-// 验证浏览器健康（使用独立脚本）
-function verifyBrowserHealth() {
-  return new Promise((resolve) => {
-    const testProcess = spawn('node', ['verify-browser.js'], {
-      stdio: 'inherit',
-      timeout: 10000,
-      env: { ...process.env }
-    });
-
-    testProcess.on('exit', (code) => {
-      resolve(code === 0);
-    });
-
-    testProcess.on('error', (err) => {
-      console.error(`❌ 验证进程启动失败: ${err.message}`);
-      resolve(false);
-    });
-  });
-}
 
 // 转发请求（带指数退避重试）
 function forwardRequest(req, res, retryCount = 0) {
@@ -394,9 +291,6 @@ const proxyServer = http.createServer((req, res) => {
     if (isBackendReady && isBrowserInstalled) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy' }));
-    } else if (isInstallingBrowser) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'installing', message: '浏览器安装中，请稍候...' }));
     } else {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'starting' }));
@@ -421,24 +315,18 @@ const proxyServer = http.createServer((req, res) => {
   forwardRequest(req, res);
 });
 
-// 快速启动流程：直接启动，后台验证
+// 启动流程（依赖 init-browser.sh 已完成浏览器初始化）
 (async () => {
   try {
-    // 直接检查浏览器是否存在
+    // 检查浏览器状态
     isBrowserInstalled = checkBrowserInstalled();
     
     if (!isBrowserInstalled) {
-      console.warn('⚠️  浏览器未检测到，将在后台自动安装');
-      // 后台异步安装，不阻塞启动
-      installBrowserSync().then(() => {
-        isBrowserInstalled = true;
-        console.log('✅ 后台安装完成');
-      }).catch(err => {
-        console.error(`❌ 后台安装失败: ${err.message}`);
-      });
+      console.error('❌ 浏览器未初始化！init-browser.sh 可能失败');
+      process.exit(1);
     }
     
-    // 立即启动后端（不等待浏览器）
+    // 启动后端
     startPlaywrightBackend();
     
     // 启动代理服务器
